@@ -4,24 +4,24 @@ A highly available 3-tier web application infrastructure built on **AWS EC2**, u
 
 ---
 
-## Table of Contents
-
-* [1. Project Overview](#1-project-overview)
-* [2. Architecture](#2-architecture)
-* [3. Infrastructure Components](#3-infrastructure-components)
-* [4. Web Tier](#4-web-tier)
-* [5. NFS Shared Storage](#5-nfs-shared-storage)
-* [6. Database Tier](#6-database-tier)
-* [7. PHP and Apache Configuration](#7-php-and-apache-configuration)
-* [8. SELinux Configuration](#8-selinux-configuration)
-* [9. Database Configuration](#9-database-configuration)
-* [10. Application Deployment](#10-application-deployment)
-* [11. Troubleshooting](#11-troubleshooting)
-* [12. Important Commands](#12-important-commands)
-* [13. Final Architecture Flow](#13-final-architecture-flow)
-* [14. Security Considerations](#14-security-considerations)
-* [15. Lessons Learned](#15-lessons-learned)
-* [16. Future Improvements](#16-future-improvements)
+- [DevOps Tooling Solution — 3-Tier Web Application](#devops-tooling-solution--3-tier-web-application)
+- [1. Project Overview](#1-project-overview)
+- [2. Architecture](#2-architecture)
+- [3. Preparing NFS Server](#3-preparing-nfs-server)
+- [4. Configure the Database Server](#4-configure-the-database-server)
+- [5. Preparing the Web Servers](#5-preparing-the-web-servers)
+- [5.1 Web Server 1](#51-web-server-1)
+- [5.2 Web Server 2](#52-web-server-2)
+- [5.3 Web Server 3](#53-web-server-3)
+- [6. Tooling Configuration](#6-tooling-configuration)
+- [From Web Server 2](#from-web-server-2)
+- [From Web Server 3](#from-web-server-3)
+- [7. Lessons Learned](#7-lessons-learned)
+  - [7.1 Shared Storage](#71-shared-storage)
+  - [7.2 Separation of Responsibilities](#72-separation-of-responsibilities)
+  - [7.3 Centralized Database](#73-centralized-database)
+  - [7.4 Linux Security](#74-linux-security)
+- [Conclusion](#conclusion)
 
 ---
 
@@ -31,23 +31,26 @@ This project demonstrates the deployment of a **3-tier web application architect
 
 The application consists of:
 
-1. **Web Tier**
+1. **Shared Storage Tier**
 
-   * Three Apache web servers
-   * PHP/PHP-FPM
-   * Shared application files through NFS
+   * Dedicated NFS server
+   * Shared application files
+   * Shared Apache logs
+   * Shared storage for other application data
+
 
 2. **Database Tier**
 
    * Dedicated MySQL database server
    * Centralized application database
 
-3. **Shared Storage Tier**
+3. **Web Tier**
 
-   * Dedicated NFS server
-   * Shared application files
-   * Shared Apache logs
-   * Shared storage for other application data
+   * Three Apache web servers
+   * PHP/PHP-FPM
+   * Shared application files through NFS
+
+
 
 The objective is to demonstrate practical DevOps concepts including:
 
@@ -75,9 +78,18 @@ The overall architecture is:
                          INTERNET
                             |
                             |
+                        NFS Server 
+                            |
+                            v
                     +----------------+
-                    | Load Balancer  |
+                    | /mnt/apps      |
+                    | /mnt/logs      |
+                    | /mnt/opt       |
                     +----------------+
+                       /    |    \
+                      /     |     \
+                     v      v      v
+                    Web 1  Web 2  Web 3
                             |
              +--------------+--------------+
              |              |              |
@@ -99,46 +111,373 @@ The overall architecture is:
                        tooling DB
 
 
-             Shared Storage
-                    |
-                    v
-            +----------------+
-            |   NFS Server   |
-            |                |
-            | /mnt/apps      |
-            | /mnt/logs      |
-            | /mnt/opt       |
-            +----------------+
-               /    |    \
-              /     |     \
-             v      v      v
-          Web 1  Web 2  Web 3
+             
 ```
 
 ---
 
-# 3. Infrastructure Components
+# 3. Preparing NFS Server
 
-| Component           | Purpose                                     |
-| ------------------- | ------------------------------------------- |
-| Web Server 1        | Hosts application                           |
-| Web Server 2        | Hosts application                           |
-| Web Server 3        | Hosts application                           |
-| MySQL Server        | Central database                            |
-| NFS Server          | Shared application/log storage              |
-| Apache              | Web server                                  |
-| PHP-FPM             | Executes PHP applications                   |
-| MySQL Client        | Allows web servers to test/connect to MySQL |
-| NFS Client          | Mounts shared NFS storage                   |
-| SELinux             | Provides mandatory access control           |
-| EBS                 | Persistent block storage for EC2            |
-| LVM                 | Storage management                          |
-| AWS Security Groups | Network-level access control                |
+The NFS server provides shared storage to all web servers.
 
----
+The NFS server contains:
 
-# 4. Web Tier
+```text
+/mnt/apps
+/mnt/logs
+/mnt/opt
+```
 
+
+1.  Launching an EC2 instance that will server as "NFS Server" 
+
+![nfs](<Images/1- nfs ec2 instance.png>)
+
+2.  Create 3 Elastic Block Storage (EBS) and attach it to the NFS server EC2
+
+![nfs ebs](<Images/2- nfs volume.png>)
+
+
+3.  Login into the EC2 via the linux terminal
+
+```
+ssh -i "key.pem" ec2-user@web-server-public-ip
+```
+
+![ssh](<Images/3- nfs server login.png>)
+
+4.  Check that block are attached to the web server
+
+```
+lsblk
+```
+   
+![blocks](<Images/4- nfs volumes.png>)
+
+5.  Update the web server
+
+```
+sudo yum -y update 
+```
+
+![update](<Images/4- server update.png>)
+
+6.  Create a single partition on each of the 3 disks attached to the Database server
+
+```
+sudo fdisk /dev/nvme1n1
+sudo fdisk /dev/nvme2n1
+sudo fdisk /dev/nvme3n1
+```
+
+![d1](Images/5-fdisk1.png)
+![d2](Images/6-fdisk2.png)
+![d3](<Images/7- fdisk3.png>)
+
+
+7.  Install the Logical Volume Manager (LVM)
+
+```
+sudo yum install lvm2 
+```
+![lvm](Images/8-lvm2.png)
+
+
+
+8.  Create Physical Volumes (PV) on each of the newly created partitions and verify the Physical volumes has been created successfully.
+
+```
+sudo pvcreate /dev/nvme1n1p1 /dev/nvme2n1p1 /dev/nvme3n1p1
+
+sudo pvs
+```
+
+![pv](Images/9-pvs.png)
+
+
+9.  Add all 3 PVs to a volume group and verify that the VG has been created successfully
+
+```
+sudo vgcreate webdata-vg /dev/nvme1n1p1 /dev/nvme2n1p1 /dev/nvme3n1p1
+
+sudo vgs
+```
+
+![vg](Images/10-vgs.png)
+
+10.   Create 3 logical volumes (LV) from the volume group. Name it **"lv-apps"**, **"lv-opt"** and **"lv-logs"** and verify that the LV has been created successfully.
+
+```
+sudo lvcreate -L 10G -n lv-apps webdata-vg
+
+sudo lvcreate -L 10G -n lv-opt webdata-vg
+
+sudo lvcreate -L 5G -n lv-logs webdata-vg
+
+sudo lvs
+```
+
+![lvs](Images/11-lvs.png)
+
+
+11.  list all blocks
+
+```
+lsblk
+```
+
+![lsblk](<Images/12- lsblk.png>)
+
+12.  Format the logical volumes with the xfs filesystem and verify that the LV has been formatted successfully.
+
+```
+sudo mkfs.xfs /dev/webdata-vg/lv-apps
+
+sudo mkfs.xfs /dev/webdata-vg/lv-logs
+
+sudo mkfs.xfs /dev/webdata-vg/lv-opt
+```
+
+![format](<Images/14-format volume.png>)
+
+13.  Create Mount directory for the logical volumes
+
+lv-apps > /mnt/apps
+
+lv-opt > /mnt/opt
+
+lv-logs > /mnt/logs
+
+```
+sudo mkdir -p /mnt/apps
+
+sudo mkdir -p /mnt/logs
+
+sudo mkdir -p /mnt/opt
+```
+![mount](<Images/13-mounting directory.png>)
+
+
+14.  Mount **/mnt/apps** on **lv-apps**
+   
+    Mount **/mnt/logs** on **lv-logs**
+
+    Mount **/mnt/opt** on **lv-opt**
+
+```
+sudo mount /dev/webdata-vg/lv-apps /mnt/apps
+
+sudo mount /dev/webdata-vg/lv-logs /mnt/logs
+
+sudo mount /dev/webdata-vg/lv-opt /mnt/opt
+```
+
+![mount](Images/15-mount.png)
+
+
+15.   Verify all setup
+
+```
+df -h
+```
+
+![setup](Images/16-verify.png)
+
+
+16.  list all blocks
+
+```
+lsblk
+```
+
+![lsblk](Images/17-lsblk.png)
+
+
+17. Check block UUIID for fstab configuration
+
+```
+sudo blkid
+```
+
+![blkid](Images/18-blkid.png)
+
+
+
+
+18.  Update **/etc/fstab** file to ensure that the mounted configuration persists after the restart of the server.
+
+```
+sudo vi /etc/fstab
+```
+![fstab](Images/19-fstab.png)
+
+
+19.  Test the configuration and reload the daemon
+
+```
+sudo mount -a  
+
+sudo systemctl daemon-reload
+```
+
+![configuration](<Images/20-verify fstab.png>)
+
+
+20.   Install NFS Server, configure it to start on reboot and ensure it is up and running
+
+```
+sudo yum install nfs-utils -y
+sudo systemctl enable nfs-server.service
+sudo systemctl start nfs-server.service
+sudo systemctl status nfs-server.service
+```
+
+![nfs](<Images/22-nfs install.png>)
+![nfs](Images/23-nfs.png)
+
+
+21.   Set up permission that will allow the Web Servers to read, write and execute files on NFS.
+The exports were configured for the web-server network:
+
+![perm](<Images/24-file permission.png>)
+
+22.    Verify subnet CIDR ip address
+
+```
+hostname -I
+ip route
+```
+
+![subnet](<Images/24b-verify subnet.png>)
+
+
+23.   Export the mounts for Webservers' subnet cidr(IPv4 cidr) to connect as clients.
+ ```text
+/mnt/apps 172.31.16.0/20(rw,sync,no_all_squash,no_root_squash)
+/mnt/logs 172.31.16.0/20(rw,sync,no_all_squash,no_root_squash)
+/mnt/opt 172.31.16.0/20(rw,sync,no_all_squash,no_root_squash)
+
+sudo exportfs -arv
+```  
+
+![export](<Images/25-export file.png>)
+![ex](<Images/26-export directory.png>)
+
+
+24.   Check which port is used by NFS and open it using the security group (add new inbound rule)
+
+```
+rpcinfo -p | grep nfs
+```
+
+![nfs port](<Images/27- nfs port.png>)
+
+
+**For NFS Server to be accessible from the client, the following ports added to the security inbound rules: TCP 111, UDP 111, NFS 2049. The Web Server subnet cidr was set as the traffic source.
+
+![sec](<Images/28-inbound rules.png>)
+
+
+
+# 4. Configure the Database Server
+
+
+1.  Launching an EC2 instance that will server as "Database Server" 
+
+![db server](<Images/29-database server.png>)
+
+
+2.  Login into the EC2 via the linux terminal
+
+```
+ssh -i "key.pem" ec2-user@web-server-public-ip
+```
+
+![db](<Images/30-db ssh login.png>)
+
+3. Update the Database server
+
+```
+sudo yum -y update 
+```
+
+![db upd](<Images/31-database server update.png>)
+
+4. Confirm MySQL package name on RHEL 10.2
+
+```
+sudo dnf search mysql | grep -i server
+```
+
+![db package](<Images/32- confirm mysql package.png>)
+
+
+5. Install Mysql Server and ensure it us up and running
+```
+sudo dnf install -y mysql8.4-server
+
+sudo systemctl enable mysqld
+sudo systemctl start mysqld
+sudo systemctl status mysqld
+```
+![mysql](<Images/33- mysql.png>)
+![mysql](<Images/34 -mysql2.png>)
+
+6. Create a database and name it tooling
+
+Create a database user and name it webaccess
+
+Grant permission to webaccess user on tooling database to do anything only from the webservers subnet cidr
+
+```
+sudo mysql
+
+CREATE DATABASE tooling;
+CREATE USER 'webaccess'@'172.31.16.0/20' IDENTIFIED WITH mysql_native_password BY 'Admin123@';
+GRANT ALL PRIVILEGES ON tooling.* TO 'webaccess'@'172.31.16.0/20' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+show databases;
+
+```
+
+![mysql](<Images/35- MYSQL USER.png>)
+![mysql](<Images/35- MYSQL DATABASE.png>)
+
+
+7. Set Bind Address and restart MySQL
+
+```
+sudo vi /etc/mysql/mysql.conf.d/mysqld.cnf
+```
+
+![m](<Images/36- myqsl config file .png>)
+
+The command that was used shows an empty configuration file because the RHEL mysql configuration file directory is different from Ubuntu. Therefore i had to find the RHEL mysql configuration file directory using this command
+
+```
+sudo find /etc -name "my.cnf" -o -name "*.cnf" | grep mysql
+
+```
+
+![mysql](Images/37-mysql.png)
+
+The RHEL mysql configuration file directory was displayed and the configuration file was updated with the new bind address
+
+```
+sudo vi /etc/my.cnf.d/mysql-server.cnf
+```
+
+![mysql](<Images/38-mysql config.png>)
+
+
+8. Open MySQL port 3306 on the DB Server EC2.
+Access to the DB Server is allowed only from the Subnet Cidr configured as source.
+
+![port](<Images/39-port 3306.png>)
+
+
+
+# 5. Preparing the Web Servers
 Three independent EC2 instances were configured as web servers.
 
 Each web server contains:
@@ -155,804 +494,418 @@ MySQL Database
 
 The web servers use the same application files through the NFS server.
 
-The application is located under:
 
-```text
-/var/www/html
+# 5.1 Web Server 1
+1. Launch a new EC2 instance with RHEL Operating System
+
+![web 1](<Images/40-web server 1.png>)
+
+2. Login into the EC2 via the linux terminal
+
+```
+ssh -i "key.pem" ec2-user@web-server-public-ip
 ```
 
-The `/var/www` directory is mounted from the NFS server.
+![login](<Images/41-server login.png>)
 
-Example:
+3. Install NFS Client
 
-```bash
-findmnt /var/www
+```
+sudo yum install nfs-utils nfs4-acl-tools -y
 ```
 
-Expected output:
+![nfs](<Images/42- nfs client.png>)
 
-```text
-TARGET   SOURCE
-/var/www 172.31.20.171:/mnt/apps
+
+4. Mount /var/www/ and target the NFS server's export for apps. NFS Server private IP address = 172.31.20.171
+
+5. Verify that NFS was mounted successfully by running df -h. 
+
 ```
-
-This means `/var/www` is not stored locally on the web server.
-
-Instead, it is being provided by the NFS server.
-
----
-
-# 5. NFS Shared Storage
-
-The NFS server provides shared storage to all web servers.
-
-The NFS server contains:
-
-```text
-/mnt/apps
-/mnt/logs
-/mnt/opt
-```
-
-The exports were configured for the web-server network:
-
-```text
-/mnt/apps 172.31.16.0/20(rw,sync,no_all_squash,no_root_squash)
-/mnt/logs 172.31.16.0/20(rw,sync,no_all_squash,no_root_squash)
-/mnt/opt 172.31.16.0/20(rw,sync,no_all_squash,no_root_squash)
-```
-
-The NFS service was enabled and started using:
-
-```bash
-sudo systemctl enable nfs-server.service
-sudo systemctl start nfs-server.service
-```
-
-The service was verified with:
-
-```bash
-sudo systemctl status nfs-server.service
-```
-
----
-
-## 5.1 Application Storage
-
-The application storage:
-
-```text
-NFS Server
-172.31.20.171:/mnt/apps
-            |
-            v
-       /var/www
-```
-
-was mounted on each web server.
-
-Example:
-
-```bash
+sudo mkdir /var/www
 sudo mount -t nfs -o rw,nosuid 172.31.20.171:/mnt/apps /var/www
+
+df -h
 ```
 
-This allows all web servers to access the same application files.
+![alt text](Images/43-mount.png)
 
-For example:
 
-```text
-Web Server 1 ─┐
-Web Server 2 ─┼──> /mnt/apps
-Web Server 3 ─┘
+6. Update the fstab file to ensure that the changes will persist after reboot. 
+
+```
+sudo vi /etc/fstab
+
+172.31.20.171:/mnt/apps /var/www nfs defaults 0 0
 ```
 
----
+![fstab](<Images/44- fstab file.png>)
 
-## 5.2 Shared Apache Logs
 
-Apache logs were also stored on the NFS server.
+7. Install Apache, Remi's repository and PHP
 
-The NFS export:
-
-```text
-172.31.20.171:/mnt/logs
+```
+sudo yum install httpd -y
 ```
 
-was mounted to:
+![httpd](<Images/45- install apache.png>)
 
-```text
-/var/log/httpd
+
+```
+sudo dnf install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
 ```
 
-Example:
+![/](Images/46.png)
 
-```bash
-sudo mount -t nfs -o rw,nosuid 172.31.20.171:/mnt/logs /var/log/httpd
+```
+sudo dnf install dnf-utils http://rpms.remirepo.net/enterprise/remi-release-9.rpm
+```
+![remi](Images/47-remi.png)
+
+```
+sudo dnf module reset php
+```
+![reset](Images/48-resetphp.png)
+
+
+```
+sudo dnf module enable php:remi-8.2
 ```
 
-Verification:
+![remi](Images/49-enablermi.png)
 
-```bash
-findmnt /var/log/httpd
+```
+sudo dnf install php php-opcache php-gd php-curl php-mysqlnd
 ```
 
-Example:
+![php](Images/50-php.png)
 
-```text
-TARGET         SOURCE
-/var/log/httpd 172.31.20.171:/mnt/logs
+
 ```
-
-This allows Apache logs from multiple web servers to be stored on shared storage.
-
----
-
-# 6. Database Tier
-
-A dedicated EC2 instance was configured as the MySQL database server.
-
-Database server:
-
-```text
-172.31.25.251
-```
-
-The application database is:
-
-```text
-tooling
-```
-
-The database contains the application tables, including:
-
-```text
-users
-```
-
-The database was verified using:
-
-```sql
-SHOW DATABASES;
-```
-
-Result included:
-
-```text
-tooling
-```
-
-The tables were verified with:
-
-```sql
-USE tooling;
-
-SHOW TABLES;
-```
-
----
-
-## 6.1 Users Table
-
-The application contains a `users` table with fields including:
-
-```text
-id
-username
-password
-email
-user_type
-status
-```
-
-Example records included:
-
-```text
-1 | admin  | admin@steghub.com | admin | 1
-2 | myuser | user@mail.com     | admin | 1
-```
-
----
-
-# 7. PHP and Apache Configuration
-
-Apache was used as the web server.
-
-PHP-FPM was used to process PHP requests.
-
-The services were enabled using:
-
-```bash
-sudo systemctl enable httpd
-sudo systemctl enable php-fpm
-```
-
-They were started with:
-
-```bash
-sudo systemctl start httpd
 sudo systemctl start php-fpm
-```
-
-Service status can be checked using:
-
-```bash
-sudo systemctl status httpd
-```
-
-and:
-
-```bash
+sudo systemctl enable php-fpm
 sudo systemctl status php-fpm
 ```
 
----
+![php](<Images/51-php running.png>)
 
-## 7.1 PHP MySQL Extensions
 
-The web servers require PHP MySQL support.
 
-The installed modules were verified with:
+# 5.2 Web Server 2
+1. Launch a new EC2 instance with RHEL Operating System
 
-```bash
-php -m | grep -Ei "mysqli|pdo_mysql|mysqlnd|session"
+![web 2](<Images/52-web server 2.png>)
+
+2. Login into the EC2 via the linux terminal
+
+```
+ssh -i "key.pem" ec2-user@web-server-public-ip
 ```
 
-Expected modules:
+![alt text](<Images/53-server login.png>)
 
-```text
-mysqli
-mysqlnd
-pdo_mysql
-session
+3. Install NFS Client
+
+```
+sudo yum install nfs-utils nfs4-acl-tools -y
 ```
 
-These modules allow PHP applications to communicate with MySQL.
+![alt text](<Images/54- nfs client.png>)
 
----
 
-# 8. SELinux Configuration
+4. Mount /var/www/ and target the NFS server's export for apps. NFS Server private IP address = 172.31.20.171
 
-One of the major troubleshooting issues encountered during the project was SELinux.
+5. Verify that NFS was mounted successfully by running df -h. 
 
-SELinux was running in:
-
-```text
-Enforcing
 ```
-
-mode.
-
-This is important because SELinux can prevent applications from performing actions even when normal Linux permissions appear correct.
-
----
-
-## 8.1 The Problem
-
-Web Server 2 initially returned:
-
-```text
-HTTP ERROR 500
-```
-
-The PHP error revealed:
-
-```text
-Fatal error: Uncaught mysqli_sql_exception:
-Permission denied
-```
-
-The application was attempting to connect to:
-
-```text
-172.31.25.251:3306
-```
-
-The SELinux audit log revealed:
-
-```text
-avc: denied { name_connect }
-dest=3306
-scontext=system_u:system_r:httpd_t:s0
-tcontext=system_u:object_r:mysqld_port_t:s0
-```
-
-This indicated that PHP-FPM, running under the Apache SELinux context, was being prevented from connecting to the MySQL port.
-
----
-
-## 8.2 Diagnosing the SELinux Problem
-
-SELinux mode was checked using:
-
-```bash
-getenforce
-```
-
-Result:
-
-```text
-Enforcing
-```
-
-The relevant SELinux boolean was checked with:
-
-```bash
-getsebool httpd_can_network_connect_db
-```
-
-The result was:
-
-```text
-httpd_can_network_connect_db --> off
-```
-
-This confirmed that Apache/PHP was not permitted to make database network connections.
-
----
-
-## 8.3 Fix
-
-The boolean was enabled using:
-
-```bash
-sudo setsebool -P httpd_can_network_connect_db on
-```
-
-The `-P` option makes the change persistent across reboots.
-
-The configuration was then verified:
-
-```bash
-getsebool httpd_can_network_connect_db
-```
-
-Expected:
-
-```text
-httpd_can_network_connect_db --> on
-```
-
-The services were restarted:
-
-```bash
-sudo systemctl restart php-fpm
-sudo systemctl restart httpd
-```
-
-After this change, the application successfully connected to MySQL.
-
----
-
-# 9. Database Configuration
-
-The application uses MySQL as a centralized database.
-
-The connection follows this model:
-
-```text
-PHP Application
-      |
-      | MySQL connection
-      |
-      v
-172.31.25.251:3306
-      |
-      v
-   tooling
-```
-
-The application connects using the `webaccess` MySQL user.
-
----
-
-## 9.1 Testing MySQL Connectivity
-
-From a web server, the MySQL client can be used to test connectivity:
-
-```bash
-mysql -h 172.31.25.251 -u webaccess -p tooling
-```
-
-Once connected:
-
-```sql
-SHOW TABLES;
-```
-
-and:
-
-```sql
-SELECT * FROM users;
-```
-
-can be used to verify database access.
-
----
-
-# 10. Application Deployment
-
-The application files are stored on the shared NFS application volume.
-
-The web root is:
-
-```text
-/var/www/html
-```
-
-The application contains files such as:
-
-```text
-index.php
-login.php
-register.php
-create_user.php
-admin_tooling.php
-functions.php
-style.css
-tooling_stylesheets.css
-img/
-```
-
-The application is therefore accessible from all web servers because they share the same NFS application storage.
-
----
-
-## 10.1 Application Structure
-
-```text
-/var/www/html
-├── index.php
-├── login.php
-├── register.php
-├── create_user.php
-├── admin_tooling.php
-├── functions.php
-├── style.css
-├── tooling_stylesheets.css
-└── img/
-```
-
----
-
-# 11. Troubleshooting
-
-## 11.1 Apache Failed to Start
-
-Apache initially failed because it could not access:
-
-```text
-/etc/httpd/logs/error_log
-```
-
-The Apache log directory was linked to:
-
-```text
-/var/log/httpd
-```
-
-which was mounted from NFS.
-
-The mount was verified using:
-
-```bash
-findmnt /var/log/httpd
-```
-
-Once the NFS log mount and permissions were correctly configured, Apache started successfully.
-
----
-
-## 11.2 HTTP 500 Error
-
-The application initially returned:
-
-```text
-HTTP 500 Internal Server Error
-```
-
-The first step was to check Apache:
-
-```bash
-sudo systemctl status httpd
-```
-
-Apache was running.
-
-PHP-FPM was also running:
-
-```bash
-sudo systemctl status php-fpm
-```
-
-PHP MySQL modules were verified:
-
-```bash
-php -m | grep -Ei "mysqli|pdo_mysql|mysqlnd|session"
-```
-
-The real PHP error was exposed by temporarily enabling:
-
-```text
-display_errors = On
-display_startup_errors = On
-error_reporting = E_ALL
-log_errors = On
-```
-
-The resulting error was:
-
-```text
-mysqli_sql_exception: Permission denied
-```
-
-SELinux audit logs then revealed the actual cause.
-
----
-
-## 11.3 SELinux Troubleshooting Commands
-
-Useful commands:
-
-```bash
-getenforce
-```
-
-Check SELinux boolean:
-
-```bash
-getsebool httpd_can_network_connect_db
-```
-
-Check recent SELinux denials:
-
-```bash
-sudo ausearch -m AVC -ts recent
-```
-
-Filter for web/database issues:
-
-```bash
-sudo ausearch -m AVC -ts recent | grep -Ei "httpd|php|mysql|denied"
-```
-
-Enable database network connections:
-
-```bash
-sudo setsebool -P httpd_can_network_connect_db on
-```
-
----
-
-# 12. Important Commands
-
-## Apache
-
-Check status:
-
-```bash
-sudo systemctl status httpd
-```
-
-Start:
-
-```bash
-sudo systemctl start httpd
-```
-
-Restart:
-
-```bash
-sudo systemctl restart httpd
-```
-
-Enable at boot:
-
-```bash
-sudo systemctl enable httpd
-```
-
-Test configuration:
-
-```bash
-sudo apachectl configtest
-```
-
-or:
-
-```bash
-sudo httpd -t
-```
-
----
-
-## PHP-FPM
-
-Check status:
-
-```bash
-sudo systemctl status php-fpm
-```
-
-Restart:
-
-```bash
-sudo systemctl restart php-fpm
-```
-
----
-
-## NFS
-
-Check mounts:
-
-```bash
-findmnt /var/www
-```
-
-Check log mount:
-
-```bash
-findmnt /var/log/httpd
-```
-
-Mount application storage:
-
-```bash
+sudo mkdir /var/www
 sudo mount -t nfs -o rw,nosuid 172.31.20.171:/mnt/apps /var/www
+
+df -h
 ```
 
-Mount log storage:
+![alt text](Images/55-mount.png)
 
-```bash
-sudo mount -t nfs -o rw,nosuid 172.31.20.171:/mnt/logs /var/log/httpd
+
+6. Update the fstab file to ensure that the changes will persist after reboot. 
+
+```
+sudo vi /etc/fstab
+
+172.31.20.171:/mnt/apps /var/www nfs defaults 0 0
 ```
 
----
+![alt text](<Images/56- fstab file.png>)
 
-## MySQL
 
-Connect to database:
+7. Install Apache, Remi's repository and PHP
 
-```bash
-mysql -h 172.31.25.251 -u webaccess -p tooling
+```
+sudo yum install httpd -y
 ```
 
-Check databases:
+![alt text](<Images/57- install apache.png>)
 
-```sql
-SHOW DATABASES;
+
+```
+sudo dnf install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
 ```
 
-Select database:
+![alt text](Images/58.png)
 
-```sql
-USE tooling;
+```
+sudo dnf install dnf-utils http://rpms.remirepo.net/enterprise/remi-release-9.rpm
+```
+![alt text](Images/59-remi.png)
+
+```
+sudo dnf module reset php
+```
+![alt text](Images/60-resetphp.png)
+
+
+```
+sudo dnf module enable php:remi-8.2
 ```
 
-Check tables:
+![alt text](<Images/61-enable remi.png>)
 
-```sql
-SHOW TABLES;
+```
+sudo dnf install php php-opcache php-gd php-curl php-mysqlnd
 ```
 
-Check users:
+![alt text](Images/62-php.png)
 
-```sql
-SELECT id, username, email, user_type, status FROM users;
+
+```
+sudo systemctl start php-fpm
+sudo systemctl enable php-fpm
+sudo systemctl status php-fpm
 ```
 
----
+![alt text](<Images/63-php running.png>)
 
-## SELinux
 
-Check mode:
+# 5.3 Web Server 3
+1. Launch a new EC2 instance with RHEL Operating System
 
-```bash
-getenforce
+![alt text](<Images/88-web server 3.png>)
+
+2. Login into the EC2 via the linux terminal
+
+```
+ssh -i "key.pem" ec2-user@web-server-public-ip
 ```
 
-Check database connection permission:
+![alt text](<Images/89-server login.png>)
 
-```bash
-getsebool httpd_can_network_connect_db
+3. Install NFS Client
+
+```
+sudo yum install nfs-utils nfs4-acl-tools -y
 ```
 
-Enable:
+![alt text](<Images/90- nfs client.png>)
 
-```bash
-sudo setsebool -P httpd_can_network_connect_db on
+
+4. Mount /var/www/ and target the NFS server's export for apps. NFS Server private IP address = 172.31.20.171
+
+5. Verify that NFS was mounted successfully by running df -h. 
+
+```
+sudo mkdir /var/www
+sudo mount -t nfs -o rw,nosuid 172.31.20.171:/mnt/apps /var/www
+
+df -h
 ```
 
-Check audit events:
+![alt text](Images/91-mount.png)
 
-```bash
-sudo ausearch -m AVC -ts recent
+6. Update the fstab file to ensure that the changes will persist after reboot. 
+
+```
+sudo vi /etc/fstab
+
+172.31.20.171:/mnt/apps /var/www nfs defaults 0 0
 ```
 
----
+![alt text](<Images/92- fstab file.png>)
 
-# 13. Final Architecture Flow
 
-The complete application request flow is:
+7. Install Apache, Remi's repository and PHP
 
-```text
-                         USER
-                           |
-                           v
-                    AWS Load Balancer
-                           |
-          +----------------+----------------+
-          |                |                |
-          v                v                v
-      Web Server 1     Web Server 2     Web Server 3
-          |                |                |
-          | Apache         | Apache         | Apache
-          | PHP-FPM        | PHP-FPM        | PHP-FPM
-          |                |                |
-          +----------------+----------------+
-                           |
-                           |
-                     PHP Application
-                           |
-                           v
-                  MySQL Database Server
-                    172.31.25.251
-                           |
-                           v
-                       tooling DB
+```
+sudo yum install httpd -y
 ```
 
-Shared storage:
+![alt text](<Images/93- install apache.png>)
 
-```text
-                    NFS SERVER
-                   172.31.20.171
-                         |
-          +--------------+--------------+
-          |              |              |
-          v              v              v
-       /mnt/apps      /mnt/logs      /mnt/opt
-          |              |              |
-          v              v              v
-       /var/www      /var/log/httpd   /var/opt
-       Web Servers    Web Servers      Web Servers
+
+```
+sudo dnf install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
 ```
 
----
+![alt text](Images/94.png)
 
-# 14. Security Considerations
+```
+sudo dnf install dnf-utils http://rpms.remirepo.net/enterprise/remi-release-9.rpm
+```
+![alt text](Images/95-remi.png)
 
-The architecture uses multiple layers of security.
+```
+sudo dnf module reset php
+```
+![alt text](Images/96-resetphp.png)
 
-### AWS Security Groups
 
-Security groups should restrict traffic between infrastructure components.
-
-Example:
-
-```text
-Internet
-   |
-   | 80/443
-   v
-Web Servers
-   |
-   | 3306
-   v
-Database Server
+```
+sudo dnf module enable php:remi-8.2
 ```
 
-The MySQL server should not expose port `3306` publicly.
+![alt text](<Images/97-enable remi.png>)
 
-Only the web-server security group/subnet should be allowed to access it.
+```
+sudo dnf install php php-opcache php-gd php-curl php-mysqlnd
+```
 
-Similarly, NFS traffic should only be accessible from the required web-server network.
+![alt text](Images/98-php.png)
 
----
 
-## SELinux
+```
+sudo systemctl start php-fpm
+sudo systemctl enable php-fpm
+sudo systemctl status php-fpm
+```
 
+![alt text](<Images/99-php running.png>)
+
+
+
+# 6. Tooling Configuration
+
+1. Verify that Apache files and directories are available on the Web Servers in /var/www and also on the NFS Server in /mnt/apps. Confirm that the NFS was mounted correctly by checking if the same files are present in both server. 
+   
+![alt text](<Images/64- webserver file.txt.png>)
+
+File.txt file was created from Web Server 1, and it was accessible from Web Server 2.
+
+![alt text](<Images/65- nfs server confirm.png>)
+
+
+2. Locate the log folder for Apache on the Web Server and mount it to NFS server's export for logs. Update the etc/fstab file to ensure that the mount persists.
+
+
+```
+ls /var/log
+
+sudo vi /etc/fstab
+```
+![alt text](<Images/65b- var-logs.png>)
+![alt text](<Images/66- fstab logs.png>)
+
+
+3. Fork the tooling source code from StegHub GitHub Account
+
+![alt text](<Images/Screenshot 2026-08-09 112646.png>)
+
+
+4. Deploy the tooling Website's code to the Web Server. Ensure that the html folder from the repository is deplyed to /var/www/html
+
+Install Git and clone the repository
+
+```
+sudo yum install git
+sudo git clone https://github.com/StegTechHub/tooling.git
+```
+
+![alt text](Images/67-git.png)
+
+
+![alt text](<Images/68-clone steghub tooling.png>)
+
+
+![alt text](Images/69-tooling.png)
+
+
+5. Open selinux file and set selinux to disable to make the change permanent.
+
+```
+sudo vi /etc/sysconfig/selinux
+
+SELINUX=disabled
+```
+
+![alt text](Images/70-SElinux.png)
+
+6. Update the website's configuration to connect to the database (in /var/www/html/function.php file). 
+
+```
+sudo vi /var/www/html/functions.php
+```
+
+![alt text](<Images/71-web conf database.png>)
+
+
+7. Apply tooling-db.sql to the database server
+
+``` sudo mysql -h <db-private-IP> -u <db-username> -p <db-password < tooling-db.sql
+```
+
+![alt text](<Images/72- mysql.png>)
+
+The server does not recognize the file because the command was made from the server root directory not the /var/www/tooling.
+
+
+![alt text](Images/73-mysql.png)
+
+The directory was changed to the tooling directorr but the server does not recognize the commad because the mysql client has not been installed on any of the web servers.
+
+Install Mysql client
+
+![alt text](<Images/74-mysql clint.png>)
+
+After the Mysql client installation, the tooling-db.sql application was retried once again and the server detect an error stating that the user already exists on the database.
+
+![alt text](<Images/75b-mysql user exist.png>)
+
+Verify the user on the database for confirmation
+
+![alt text](<Images/75c-verify database.png>)
+
+In order to successfully apply the tooling-db.sql, the existing database was dropped and recreated.
+
+![alt text](<Images/75d-drop database.png>)
+
+![alt text](<Images/76- mysyl success.png>)
+
+Database Application successful
+
+8. Access the database server from Web Server
+9. Create in MyQSL a new admin user with username: myuser and password: password
+
+```
+sudo mysql -h 172.31.8.129 -u webaccess -p
+
+INSERT INTO users(id, username, password, email, user_type, status) VALUES (2, 'myuser', '5f4dcc3b5aa765d61d8327deb882cf99', 'user@mail.com', 'admin', '1');
+```
+
+![alt text](<Images/77- mysql access.png>)
+
+
+1.   Open a browser and access the website using the Web Server public IP address http://<Web-Server-public-IP-address>/index.php. 
+
+
+![alt text](<Images/78- web access 1.png>)
+
+![alt text](<Images/78- web access 2.png>)
+
+
+
+# From Web Server 2
+
+i tried accessing the website from the web server 2 but the site refused to load stating and error 500.
+
+While going through the troubleshooting process, i realized that the
 SELinux remains enabled in enforcing mode.
 
 Instead of disabling SELinux to make the application work, the required policy was enabled:
@@ -963,13 +916,27 @@ sudo setsebool -P httpd_can_network_connect_db on
 
 This is preferable to disabling SELinux entirely.
 
+After disabling the SELinux, i retried accessing the website from server 2 and it was successful
+
+![alt text](<Images/80- web server2.png>)
+
+![alt text](<Images/80b- web server2.png>)
+
+
+# From Web Server 3
+
+![alt text](<Images/79a- web server3.png>)
+
+![alt text](<Images/79b- web server3.png>)
+
+
 ---
 
-# 15. Lessons Learned
+# 7. Lessons Learned
 
 This project provided practical experience with several important DevOps concepts.
 
-## 15.1 Shared Storage
+## 7.1 Shared Storage
 
 NFS allows multiple servers to access the same application files.
 
@@ -985,7 +952,7 @@ can all serve the same application without maintaining separate copies of the ap
 
 ---
 
-## 15.2 Separation of Responsibilities
+## 7.2 Separation of Responsibilities
 
 The architecture separates:
 
@@ -999,7 +966,7 @@ This makes the infrastructure easier to scale and maintain.
 
 ---
 
-## 15.3 Centralized Database
+## 7.3 Centralized Database
 
 Instead of installing MySQL on every web server, a dedicated database server is used.
 
@@ -1013,7 +980,7 @@ This provides a centralized source of application data.
 
 ---
 
-## 15.4 Linux Security
+## 7.4 Linux Security
 
 A service being "running" does not necessarily mean that it can perform every operation it needs.
 
@@ -1039,147 +1006,7 @@ This demonstrates why DevOps engineers must understand both:
 * application configuration
 * operating-system security policies
 
----
 
-## 15.5 Troubleshooting Methodology
-
-The HTTP 500 error demonstrated a useful troubleshooting process:
-
-```text
-Application error
-      |
-      v
-Check Apache
-      |
-      v
-Check PHP-FPM
-      |
-      v
-Check PHP modules
-      |
-      v
-Test database connectivity
-      |
-      v
-Check SELinux
-      |
-      v
-Check audit logs
-      |
-      v
-Identify exact denial
-      |
-      v
-Apply targeted fix
-```
-
-Rather than disabling security controls or reinstalling services, the specific cause was identified and corrected.
-
----
-
-# 16. Future Improvements
-
-The current architecture can be extended into a more production-oriented DevOps platform.
-
-Potential improvements include:
-
-### Load Balancer
-
-Add an AWS Application Load Balancer:
-
-```text
-Internet
-   |
-   v
-Application Load Balancer
-   |
-   +---- Web 1
-   +---- Web 2
-   +---- Web 3
-```
-
----
-
-### Auto Scaling
-
-Configure an Auto Scaling Group so additional web servers can automatically be created when demand increases.
-
----
-
-### HTTPS
-
-Configure TLS/SSL using AWS Certificate Manager and HTTPS.
-
----
-
-### CI/CD
-
-The existing application repository can be integrated with:
-
-* GitHub
-* Jenkins
-* GitHub Actions
-
-A CI/CD pipeline could automatically:
-
-```text
-Developer
-   |
-   v
-Git Push
-   |
-   v
-GitHub
-   |
-   v
-CI/CD Pipeline
-   |
-   v
-Build / Test
-   |
-   v
-Deployment
-   |
-   v
-Web Servers
-```
-
----
-
-### Infrastructure as Code
-
-The infrastructure can eventually be recreated using:
-
-* Terraform
-* Ansible
-* AWS CloudFormation
-
-Instead of manually configuring every server.
-
----
-
-### Monitoring
-
-Monitoring can be introduced using:
-
-* AWS CloudWatch
-* Prometheus
-* Grafana
-* ELK/OpenSearch
-
----
-
-### Database High Availability
-
-The current architecture uses a single MySQL database server.
-
-For higher availability, this could eventually be replaced with:
-
-```text
-Amazon RDS
-```
-
-or a MySQL replication/cluster architecture.
 
 ---
 
@@ -1202,16 +1029,3 @@ MySQL
 ```
 
 A key troubleshooting lesson was that an HTTP 500 error does not necessarily mean Apache is broken. The application may be running correctly while an underlying operating-system security policy prevents it from communicating with another service.
-
-The final infrastructure provides a foundation that can later be extended with:
-
-* Load balancing
-* Auto scaling
-* CI/CD
-* Infrastructure as Code
-* Monitoring
-* HTTPS
-* Database high availability
-* Automated deployments
-
-This project therefore serves as a practical foundation for progressing from traditional Linux administration toward modern **DevOps and cloud engineering practices**.
